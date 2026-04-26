@@ -6,10 +6,16 @@ import (
 
 	"github.com/Dowdow/deckline/control"
 	"github.com/Dowdow/deckline/hid"
+	"github.com/Dowdow/deckline/hid/dualshock4"
+	"github.com/Dowdow/deckline/mixer"
 )
 
 func main() {
-	// uiChan := make(chan tea.Msg)
+	audioMixer := mixer.NewMixer()
+	go audioMixer.Run()
+
+	audioMixer.Load("A", "track1.mp3")
+	deckA := audioMixer.GetDeck("A")
 
 	monitorEventChan := make(chan control.ControllerMonitorEvent)
 	controllerEventChan := make(chan control.ControllerEvent)
@@ -22,6 +28,8 @@ func main() {
 	}
 
 	go hidMonitor.Watch(monitorEventChan)
+
+	// var ratio float64 = 1.0
 
 	for {
 		select {
@@ -37,16 +45,37 @@ func main() {
 			}
 
 		case cEvent := <-controllerEventChan:
-			if cEvent.Type == control.EventTypeButton {
-				fmt.Printf("Input reçu du contrôleur : %v %v %v\n", cEvent.ID, cEvent.Type, cEvent.Value)
+			switch cEvent.ID {
+			case int(dualshock4.LeftStickY):
+				if cEvent.Value <= 95 || cEvent.Value >= 159 {
+					min := -0.001
+					max := 0.001
+					delta := min + (float64(cEvent.Value)/255)*(max-min)
+					speed := deckA.GetSpeed()
+					fmt.Println(speed, delta)
+					deckA.SetSpeed(speed + delta)
+				}
+			case int(dualshock4.Up):
+				if cEvent.Value == 1 {
+					deckA.Ask()
+				}
+			case int(dualshock4.Down):
+				if cEvent.Value == 1 {
+					deckA.TogglePlay()
+				}
+			case int(dualshock4.Left):
+				if cEvent.Value == 1 {
+					deckA.Seek(0.1)
+				}
+			case int(dualshock4.Right):
+				if cEvent.Value == 1 {
+					deckA.Seek(0.9)
+				}
 			}
 
 		case <-time.After(10 * time.Second):
 		}
 	}
-
-	// mixer := mixer.NewMixer(uiChan)
-	// go mixer.Run()
 
 	/*
 		p := tea.NewProgram(ui.NewMainModel(uiChan))

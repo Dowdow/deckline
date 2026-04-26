@@ -2,7 +2,6 @@ package hid
 
 import (
 	"bytes"
-	"fmt"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -157,8 +156,6 @@ func (m *hidMonitor) CreateController(path string) control.Controller {
 
 	vendorId := uint16(info.Vendor)
 	productId := uint16(info.Product)
-	fmt.Printf("Vendor ID: 0x%04x\n", uint16(info.Vendor))
-	fmt.Printf("Product ID: 0x%04x\n", uint16(info.Product))
 
 	switch {
 	case vendorId == 0x054c && productId == 0x09cc:
