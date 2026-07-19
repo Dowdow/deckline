@@ -5,88 +5,86 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"time"
 
-	"github.com/gopxl/beep/v2"
-	"github.com/gopxl/beep/v2/effects"
-	"github.com/gopxl/beep/v2/mp3"
-	"github.com/gopxl/beep/v2/speaker"
-	"github.com/gopxl/beep/v2/wav"
+	"github.com/Dowdow/deckline/audio"
 )
 
-const SampleRate beep.SampleRate = 48000 // Add configuration for this later
+const SampleRate = 48000 // Add configuration for this later
+
+const resampleQuality = 4
+
+// deckIDs are the fixed set of channel strips this app supports. Decks are
+// created once at Mixer construction and live for the process's lifetime —
+// see Deck's doc comment for why.
+var deckIDs = []string{"A", "B"}
 
 type Mixer struct {
 	mu     sync.RWMutex
-	engine beep.Mixer
+	engine audio.Mixer
+	output *audio.Output
 	decks  map[string]*Deck
 }
 
-func NewMixer() *Mixer {
-	speaker.Init(SampleRate, SampleRate.N(time.Second/10))
+func NewMixer() (*Mixer, error) {
+	m := &Mixer{decks: make(map[string]*Deck, len(deckIDs))}
+	m.engine.KeepAlive(true) // Mandatory
 
-	m := beep.Mixer{}
-	m.KeepAlive(true) // Mandatory
-
-	return &Mixer{
-		engine: m,
-		decks:  make(map[string]*Deck),
+	for _, id := range deckIDs {
+		deck := newEmptyDeck()
+		m.decks[id] = deck
+		m.engine.Add(deck.volume)
 	}
+
+	output, err := audio.NewOutput(SampleRate, SampleRate/10, &m.engine)
+	if err != nil {
+		return nil, err
+	}
+	m.output = output
+
+	return m, nil
 }
 
 func (m *Mixer) Run() {
-	speaker.Play(&m.engine)
+	m.output.Play()
 	select {} // Mandatory
 }
 
+// Load decodes path and loads it into the given deck (must be one of
+// deckIDs). The deck's channel strip (EQ/filter/fader/tempo) is left as-is;
+// only playback position and track identity reset.
 func (m *Mixer) Load(deckID, path string) error {
+	m.mu.RLock()
+	deck, ok := m.decks[deckID]
+	m.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("unknown deck %q", deckID)
+	}
+
 	file, err := os.Open(path)
 	if err != nil {
 		return err
 	}
-	defer file.Close()
 
-	var streamer beep.StreamSeekCloser
-	var format beep.Format
+	var streamer audio.StreamSeeker
+	var srcRate int
 
 	switch filepath.Ext(path) {
 	case ".mp3":
-		streamer, format, err = mp3.Decode(file)
+		streamer, srcRate, err = audio.DecodeMP3(file)
 	case ".wav":
-		streamer, format, err = wav.Decode(file)
+		streamer, srcRate, err = audio.DecodeWAV(file)
 	default:
+		file.Close()
 		return fmt.Errorf("unsupported format")
 	}
 	if err != nil {
 		return err
 	}
-	defer streamer.Close()
 
-	buf := beep.NewBuffer(format)
-	buf.Append(beep.Resample(4, format.SampleRate, SampleRate, streamer))
-	streamer.Close()
+	buf := audio.NewBuffer()
+	buf.Append(audio.ResampleRatio(resampleQuality, float64(srcRate)/float64(SampleRate), streamer))
 
-	baseStreamer := buf.Streamer(0, buf.Len())
-
-	ctrl := &Control{Streamer: baseStreamer, Paused: true, Ejected: false}
-
-	resamp := beep.ResampleRatio(4, 1.0, ctrl)
-
-	vol := &effects.Volume{Streamer: resamp, Base: 2, Volume: 0}
-
-	deck := &Deck{
-		buffer:       buf,
-		baseStreamer: baseStreamer,
-		control:      ctrl,
-		resampler:    resamp,
-		volume:       vol,
-	}
-
-	m.mu.Lock()
-	m.decks[deckID] = deck
-	m.mu.Unlock()
-
-	m.engine.Add(vol)
+	deck.LoadTrack(buf, buf.Streamer(0, buf.Len()), filepath.Base(path))
 
 	return nil
 }
@@ -97,14 +95,13 @@ func (m *Mixer) GetDeck(deckID string) *Deck {
 	return m.decks[deckID]
 }
 
+// Eject clears the loaded track from a deck, returning it to silence.
 func (m *Mixer) Eject(deckID string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.mu.RLock()
+	deck, ok := m.decks[deckID]
+	m.mu.RUnlock()
 
-	if deck, ok := m.decks[deckID]; ok {
-		deck.mu.Lock()
-		deck.control.Ejected = true
-		deck.mu.Unlock()
-		delete(m.decks, deckID)
+	if ok {
+		deck.Unload()
 	}
 }
